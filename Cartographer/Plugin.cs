@@ -88,8 +88,8 @@ namespace Cartographer
 
         private bool StepTowardsTarget(Client client, Location targetLocation, TimeSpan deltaTime)
         {
-            const double MIN_MOVE_SPEED = 4;
-            const double MAX_MOVE_SPEED = 9.6;
+            const double MIN_MOVE_SPEED = 40;
+            const double MAX_MOVE_SPEED = 96;
 
             // Character speed in tiles per second
             double playerSpeed = MIN_MOVE_SPEED + ((client.PlayerData.Speed / 75.0) * (MAX_MOVE_SPEED - MIN_MOVE_SPEED));
