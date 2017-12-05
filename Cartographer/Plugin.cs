@@ -17,128 +17,127 @@ namespace Cartographer
 {
     public class Plugin : IPlugin
     {
-        private static readonly Location LOCATION_TOP_OF_NEXUS_TUTORIAL = new Location(134.5f, 98.5f);
+        private static readonly Location NEXUS_TUTORIAL_TARGET_LOCATION = new Location(134f, 99.5f);
 
-        private string mapName = string.Empty;
-        private bool firstUpdate = false;
-
-        private bool blockNextGotoAck = false;
+        private bool enabled;
+        private FlashClient flash;
+        private string currentMapName;
+        private bool newMap;
 
         public string GetAuthor() => "natiiix";
 
-        public string[] GetCommands() => new string[0];
+        public string[] GetCommands() => new string[]
+        {
+            "/cart - Toggles the cartographer bot"
+        };
 
         public string GetDescription() => "Cartographer bot by natiiix";
 
-        public string GetName() => "Cartographer Bot";
+        public string GetName() => "Cartographer";
 
         public void Initialize(Proxy proxy)
         {
+            enabled = false;
+
+            // Plugin toggle command
+            proxy.HookCommand("cart", delegate
+            {
+                // If enabled
+                if (enabled = !enabled)
+                {
+                    Log("Starting");
+                    flash = new FlashClient();
+                    newMap = true;
+                }
+                // If disabled
+                else
+                {
+                    Log("Stopping");
+                    flash.StopMoving();
+                }
+            });
+
             proxy.HookPacket<MapInfoPacket>(OnMapInfo);
             proxy.HookPacket<UpdatePacket>(OnUpdate);
-            proxy.HookPacket<GotoAckPacket>(OnGotoAck);
         }
 
         private void OnMapInfo(Client client, MapInfoPacket p)
         {
-            mapName = p.Name;
-            firstUpdate = true;
+            // Map has changed
+            currentMapName = p.Name;
+            newMap = true;
         }
 
         private void OnUpdate(Client client, UpdatePacket p)
         {
-            if (firstUpdate && client.Connected)
+            // If the plugin is enabled, player is on a new map and the client is connected
+            if (enabled && newMap && client.Connected)
             {
-                firstUpdate = false;
-
-                switch (mapName)
+                // Correct map
+                if (currentMapName == "Nexus Explanation")
                 {
-                    case "Nexus Explanation":
-                        PluginUtils.Delay(100, () => MoveTo(client, LOCATION_TOP_OF_NEXUS_TUTORIAL));
-                        break;
+                    // Start moving towards the target on a background thread
+                    Log("Starting to move");
+                    new Task(() => MoveToTarget(client)).Start();
+                }
+                // Any other map
+                else
+                {
+                    // There needs to be some delay before the teleport to avoid an exception in K-Relay
+                    Log("Teleporting to Nexus Explanation");
+                    PluginUtils.Delay(1000, () => client?.SendChatMessage("/nexustutorial"));
+                }
 
-                    default:
-                        PluginUtils.Delay(100, () => client.SendChatMessage("/nexustutorial"));
-                        break;
+                // This is no longer a new map
+                newMap = false;
+            }
+        }
+
+        // Send the log message to the K-Relay log with this plugin's name as a source
+        private void Log(string text) => PluginUtils.Log(GetName(), text);
+
+        private void MoveToTarget(Client client)
+        {
+            // Get the current time and player position
+            Location lastPlayerPos = client.PlayerData.Pos;
+            DateTime dtLastMove = DateTime.Now;
+
+            // Move towards the target location
+            // Loop breaks when the target location is reached or when the client connection drops
+            while (enabled && client.Connected && flash.MoveInDirection(
+                NEXUS_TUTORIAL_TARGET_LOCATION.X - client.PlayerData.Pos.X,
+                NEXUS_TUTORIAL_TARGET_LOCATION.Y - client.PlayerData.Pos.Y))
+            {
+                // Add some delay between the iterations
+                Thread.Sleep(100);
+
+                // Player has moved since the last iteration
+                if (lastPlayerPos.X != client.PlayerData.Pos.X || lastPlayerPos.Y != client.PlayerData.Pos.Y)
+                {
+                    // Update the current time and player position
+                    lastPlayerPos = client.PlayerData.Pos;
+                    dtLastMove = DateTime.Now;
+                }
+                // Player hasn't moved for some time
+                else if ((DateTime.Now - dtLastMove).TotalSeconds >= 0.5)
+                {
+                    // Stop moving to reset the key states
+                    Log("Restarting movement");
+                    flash.StopMoving();
                 }
             }
-        }
 
-        private void OnGotoAck(Client client, Packet p)
-        {
-            if (blockNextGotoAck)
+            // Stop all movement
+            Log("Stopping all movement");
+            flash.StopMoving();
+
+            // If the user wants to continue
+            if (enabled)
             {
-                p.Send = false;
-                blockNextGotoAck = false;
+                // Teleport to Tutorial
+                Log("Teleporting to Tutorial");
+                client?.SendChatMessage("/tutorial");
             }
-        }
-
-        private void MoveTo(Client client, Location targetLocation)
-        {
-            DateTime dtLast = DateTime.Now;
-
-            while (!StepTowardsTarget(client, targetLocation, DateTime.Now - dtLast) && client.Connected)
-            {
-                dtLast = DateTime.Now;
-                Thread.Sleep(20);
-            }
-
-            client.SendChatMessage("/tutorial");
-        }
-
-        private bool StepTowardsTarget(Client client, Location targetLocation, TimeSpan deltaTime)
-        {
-            const double MIN_MOVE_SPEED = 40;
-            const double MAX_MOVE_SPEED = 96;
-
-            // Character speed in tiles per second
-            double playerSpeed = MIN_MOVE_SPEED + ((client.PlayerData.Speed / 75.0) * (MAX_MOVE_SPEED - MIN_MOVE_SPEED));
-
-            // Number of tiles the character can move in this tick
-            //double maxTickDistance = playerSpeed * deltaTime.TotalSeconds;
-            double maxTickDistance = playerSpeed * 1.3 * deltaTime.TotalSeconds;
-
-            // Get the current position of the player
-            Location currentPos = client.PlayerData.Pos;
-
-            // Calculate the distance to target
-            // Using double-precision methods instead of the built-in float distance method for maximum accuracy
-            double distanceToTarget = Math.Sqrt(Math.Pow(targetLocation.X - currentPos.X, 2) + Math.Pow(targetLocation.Y - currentPos.Y, 2));
-
-            // Create a new GOTO packet
-            GotoPacket gp = Packet.Create<GotoPacket>(PacketType.GOTO);
-
-            bool withinReach = distanceToTarget <= maxTickDistance;
-
-            // Target is within the maximum move distance
-            if (withinReach)
-            {
-                // Move to the target
-                gp.Location = targetLocation;
-            }
-            // Target is too far to be reached in a single tick
-            else
-            {
-                // Calculate the partial target
-                double moveScale = maxTickDistance / distanceToTarget;
-
-                double partialX = currentPos.X + ((targetLocation.X - currentPos.X) * moveScale);
-                double partialY = currentPos.Y + ((targetLocation.Y - currentPos.Y) * moveScale);
-
-                // Move to the partial target
-                gp.Location = new Location((float)partialX, (float)partialY);
-            }
-
-            // Set the object ID to the ID of the player's character
-            gp.ObjectId = client.ObjectId;
-
-            // Bock the next GOTOACK packet
-            blockNextGotoAck = true;
-
-            // Send the GOTO packet to the client
-            client.SendToClient(gp);
-
-            return withinReach;
         }
     }
 }
